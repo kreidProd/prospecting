@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import requests
 
 from ads_verifier import NULL_VERIFIER
+from owner_extractor import resolve_owner
 
 
 # --- Qualifying floor constants -------------------------------------------
@@ -69,6 +70,10 @@ COLUMN_ALIASES = {
     "state": ["state", "region"],
     "reviews": ["total_reviews", "reviews", "review_count", "ratings_count", "reviews_count"],
     "rating": ["rating", "avg_rating", "average_rating", "stars"],
+    "owner_name": [
+        "owner_name", "owner", "business_owner", "contact", "contact_name",
+        "primary_contact", "point_of_contact", "poc", "decision_maker", "full_name",
+    ],
 }
 
 
@@ -409,6 +414,23 @@ def run_pipeline(
         out["score_breakdown"] = "; ".join(breakdown)
         out["phone_verified"] = "yes" if phone_verified else "no"
         out["location_count"] = str(locations)
+
+        # Owner name — prefer an existing value from the incoming CSV
+        # (ClickUp re-tier often already has an owner/contact column).
+        # Only scrape when the row didn't supply one.
+        existing_owner = (row.get("owner_name") or "").strip()
+        if existing_owner:
+            owner_name, owner_source = existing_owner, "csv"
+        else:
+            owner_name, owner_source = resolve_owner(
+                html or "",
+                business_name=row.get("business_name", ""),
+                city=row.get("city", ""),
+                state=row.get("state", ""),
+                allow_bbb=True,
+            )
+        out["owner_name"] = owner_name
+        out["owner_source"] = owner_source
 
         # Live-ad verification fields
         out["google_ads_live"] = "yes" if g_res.get("live") else "no"

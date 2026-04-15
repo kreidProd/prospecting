@@ -10,7 +10,7 @@ DEFAULTS = {
     "clickup_api_key": "",
     "clickup_list_id": "",
     "meta_ads_access_token": "",
-    "apify_transparency_actor": "curious_coder/google-ads-transparency-center",
+    "apify_transparency_actor": "automation-lab~google-ads-scraper",
     "verify_live_ads": True,
     "default_radius_miles": 25,
     "default_limit": 500,

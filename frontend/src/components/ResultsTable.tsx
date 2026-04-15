@@ -7,6 +7,7 @@ type Col = { key: string; label: string; width?: string }
 const COLS: Col[] = [
   { key: 'fit_score', label: 'Score', width: '80px' },
   { key: 'business_name', label: 'Business' },
+  { key: 'owner_name', label: 'Owner' },
   { key: 'tier', label: 'Tier' },
   { key: 'phone', label: 'Phone' },
   { key: 'phone_verified', label: 'Verified' },
@@ -15,7 +16,8 @@ const COLS: Col[] = [
   { key: 'city', label: 'City' },
   { key: 'reviews', label: 'Reviews' },
   { key: 'rating', label: 'Rating' },
-  { key: 'signal_google_ads_pixel', label: 'Ads' },
+  { key: 'live_ads', label: 'Live', width: '72px' },
+  { key: 'signal_google_ads_pixel', label: 'Pixel' },
   { key: 'signal_conversion_event', label: 'Conv' },
   { key: 'signal_gtm', label: 'GTM' },
   { key: 'skip_reason', label: 'Reason' },
@@ -186,12 +188,18 @@ function ScoreBreakdown({ row }: { row: ResultRow }) {
           <code className="rounded bg-white px-1.5 py-0.5 ring-1 ring-inset ring-slate-200">
             {adSource || 'n/a'}
           </code>
-          {adSource === 'tag_detection' && (
+          {adSource && !adSource.includes('google_transparency') && !adSource.includes('meta_ads_library') && (
             <span className="ml-1 text-amber-600">
-              — tag presence only. Add Apify key to upgrade to Transparency Center.
+              — tag presence only. Add Meta token + Apify key to verify live ads.
             </span>
           )}
         </span>
+        {(row.google_ads_error || row.meta_ads_error) && (
+          <span className="text-amber-600">
+            {row.google_ads_error && <span>Google: {row.google_ads_error}. </span>}
+            {row.meta_ads_error && <span>Meta: {row.meta_ads_error}.</span>}
+          </span>
+        )}
         {row.location_count && (
           <span>
             <span className="font-semibold uppercase tracking-wider">Locations:</span>{' '}
@@ -226,6 +234,38 @@ function FilterPill({
   )
 }
 
+function LiveAdsCell({ row }: { row: ResultRow }) {
+  const g = row.google_ads_live === 'yes'
+  const m = row.meta_ads_live === 'yes'
+  const gCount = Number(row.google_ads_count || 0)
+  const mCount = Number(row.meta_ads_count || 0)
+  if (!g && !m) {
+    // Distinguish "checked and nothing" from "never checked"
+    const checked = row.google_ads_live === 'no' || row.meta_ads_live === 'no'
+    return <span className="text-slate-300" title={checked ? 'No live ads found' : 'Not verified'}>—</span>
+  }
+  return (
+    <div className="flex items-center gap-1">
+      {g && (
+        <span
+          title={`Google Ads Transparency: ${gCount} live ad${gCount === 1 ? '' : 's'}`}
+          className="inline-flex items-center gap-0.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/20"
+        >
+          G{gCount > 0 && <span className="tabular-nums">·{gCount}</span>}
+        </span>
+      )}
+      {m && (
+        <span
+          title={`Meta Ads Library: ${mCount} live ad${mCount === 1 ? '' : 's'}`}
+          className="inline-flex items-center gap-0.5 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-inset ring-sky-600/20"
+        >
+          M{mCount > 0 && <span className="tabular-nums">·{mCount}</span>}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function ScoreCell({ score }: { score: number }) {
   const color =
     score >= 75
@@ -255,6 +295,30 @@ function ScoreCell({ score }: { score: number }) {
 
 function renderCell(col: string, val: string | undefined, row: ResultRow) {
   if (col === 'fit_score') return <ScoreCell score={Number(val || 0)} />
+
+  if (col === 'live_ads') return <LiveAdsCell row={row} />
+
+  if (col === 'owner_name') {
+    if (!val) return <span className="text-slate-300">—</span>
+    const src = row.owner_source
+    const srcLabel =
+      src === 'website' ? 'site'
+      : src === 'bbb' ? 'BBB'
+      : src === 'csv' ? 'CSV'
+      : ''
+    return (
+      <span className="inline-flex items-center gap-1.5" title={`Source: ${src || 'unknown'}`}>
+        <span className="text-slate-900">{val}</span>
+        {srcLabel && (
+          <span className="rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-500">
+            {srcLabel}
+          </span>
+        )}
+      </span>
+    )
+  }
+
+
 
   if (col === 'tier') {
     if (!val) return <span className="text-slate-300">—</span>

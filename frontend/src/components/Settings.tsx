@@ -5,10 +5,12 @@ import {
   testClickUp,
   testApify,
   testMetaAds,
+  testGoogleAds,
   type AppSettings,
   type ClickUpTestResult,
   type ApifyTestResult,
   type MetaTestResult,
+  type GoogleAdsTestResult,
 } from '../api'
 
 export function Settings() {
@@ -22,6 +24,9 @@ export function Settings() {
   const [apifyResult, setApifyResult] = useState<ApifyTestResult | null>(null)
   const [testingMeta, setTestingMeta] = useState(false)
   const [metaResult, setMetaResult] = useState<MetaTestResult | null>(null)
+  const [googleTestDomain, setGoogleTestDomain] = useState('angi.com')
+  const [testingGoogle, setTestingGoogle] = useState(false)
+  const [googleResult, setGoogleResult] = useState<GoogleAdsTestResult | null>(null)
 
   useEffect(() => {
     getSettings()
@@ -44,6 +49,10 @@ export function Settings() {
       // Don't echo masked values back to the server
       if (patch.outscraper_api_key?.startsWith('••••')) delete patch.outscraper_api_key
       if (patch.clickup_api_key?.startsWith('••••')) delete patch.clickup_api_key
+      if (patch.apify_api_token?.startsWith('••••')) delete patch.apify_api_token
+      if (patch.hunter_api_key?.startsWith('••••')) delete patch.hunter_api_key
+      if (patch.neverbounce_api_key?.startsWith('••••')) delete patch.neverbounce_api_key
+      if (patch.meta_ads_access_token?.startsWith('••••')) delete patch.meta_ads_access_token
       const updated = await saveSettings(patch)
       setSettings(updated)
       setDraft(updated)
@@ -183,6 +192,107 @@ export function Settings() {
             {testing ? 'Testing…' : 'Test connection'}
           </button>
           {testResult && <ClickUpResult result={testResult} />}
+        </div>
+      </Section>
+
+      <Section
+        title="Live-ad verification"
+        description="Confirms a prospect is actually running paid ads right now. Promotes 1B → 1A and 3B → 3A only when a live ad is detected, so your top tiers stop leaning on proxy signals."
+      >
+        <KeyField
+          label="Meta Ads Library access token"
+          hint="Graph API token with ads_read. developers.facebook.com → your app → Tools → Graph API Explorer. Free."
+          value={(draft.meta_ads_access_token as string) ?? ''}
+          onChange={(v) => set('meta_ads_access_token', v)}
+          isSet={settings.meta_ads_access_token_set}
+        />
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={async () => {
+              setTestingMeta(true)
+              setMetaResult(null)
+              const patch: Partial<AppSettings> = {
+                meta_ads_access_token: draft.meta_ads_access_token?.startsWith('••••')
+                  ? undefined
+                  : draft.meta_ads_access_token,
+              }
+              if (patch.meta_ads_access_token !== undefined) {
+                try {
+                  await saveSettings(patch)
+                } catch { /* noop */ }
+              }
+              const r = await testMetaAds()
+              setMetaResult(r)
+              setTestingMeta(false)
+            }}
+            disabled={testingMeta || (!settings.meta_ads_access_token_set && !draft.meta_ads_access_token)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {testingMeta ? 'Testing…' : 'Test Meta connection'}
+          </button>
+          {metaResult && <MetaResultBadge result={metaResult} />}
+        </div>
+
+        <div className="border-t border-slate-100 pt-4">
+          <Field
+            label="Apify Google Ads Transparency actor"
+            hint="Actor slug that scrapes adstransparency.google.com. Default works for most; change if you fork your own."
+          >
+            <input
+              type="text"
+              value={(draft.apify_transparency_actor as string) ?? ''}
+              onChange={(e) => set('apify_transparency_actor', e.target.value)}
+              placeholder="automation-lab~google-ads-scraper"
+              className={inputCls}
+            />
+          </Field>
+
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              type="text"
+              value={googleTestDomain}
+              onChange={(e) => setGoogleTestDomain(e.target.value)}
+              placeholder="domain to test (e.g. angi.com)"
+              className={`${inputCls} max-w-xs`}
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                setTestingGoogle(true)
+                setGoogleResult(null)
+                const actorSlug = (draft.apify_transparency_actor as string | undefined)?.trim() || undefined
+                const r = await testGoogleAds(googleTestDomain.trim(), actorSlug)
+                setGoogleResult(r)
+                setTestingGoogle(false)
+              }}
+              disabled={testingGoogle || !googleTestDomain.trim() || !settings.apify_api_token_set}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {testingGoogle ? 'Running actor…' : 'Test Google Transparency'}
+            </button>
+          </div>
+          {googleResult && <GoogleResultBadge result={googleResult} />}
+          <p className="mt-1 text-xs text-slate-500">
+            Takes 30–120s. Runs the actor against one domain and shows the raw shape so we can spot contract mismatches.
+          </p>
+        </div>
+
+        <div className="flex items-start gap-3 border-t border-slate-100 pt-4">
+          <input
+            id="verify_live_ads"
+            type="checkbox"
+            checked={draft.verify_live_ads ?? true}
+            onChange={(e) => set('verify_live_ads', e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+          />
+          <label htmlFor="verify_live_ads" className="text-sm text-slate-700">
+            <span className="font-medium">Verify live ads during enrichment</span>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Adds an API call per prospect. Turn off for pure-speed runs — tiers fall back to proxy signals (gclid, pixels).
+            </p>
+          </label>
         </div>
       </Section>
 
@@ -383,6 +493,56 @@ function ApifyResultBadge({ result }: { result: ApifyTestResult }) {
       <span className="font-medium">✓ Connected</span> as{' '}
       <span className="font-semibold">{result.username}</span>
       {result.plan && <> · plan <span className="font-semibold">{result.plan}</span></>}
+    </div>
+  )
+}
+
+function GoogleResultBadge({ result }: { result: GoogleAdsTestResult }) {
+  if (!result.ok) {
+    return (
+      <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
+        <div className="font-medium">Actor run failed.</div>
+        <div className="mt-0.5">{result.error}</div>
+        {result.actor && <div className="mt-0.5 text-red-600/80">Actor: <code>{result.actor}</code></div>}
+      </div>
+    )
+  }
+  const ok = (result.parsed_ad_count ?? 0) > 0
+  return (
+    <div className={`mt-2 rounded-md px-3 py-2 text-xs ${ok ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+      <div className="font-medium">
+        {ok ? '✓ Verifier working end-to-end' : '⚠ Actor ran but parsed 0 ads for this domain'}
+      </div>
+      <div className="mt-0.5 text-[11px] opacity-80">
+        Actor: <code>{result.actor}</code> · raw items: <span className="font-semibold tabular-nums">{result.item_count}</span>
+        {' · '}parsed: <span className="font-semibold tabular-nums">{result.parsed_ad_count}</span>
+      </div>
+      {result.sample_item_keys && result.sample_item_keys.length > 0 && (
+        <div className="mt-1 text-[11px] opacity-80">
+          First-item keys: <code>{result.sample_item_keys.join(', ')}</code>
+        </div>
+      )}
+      {!ok && result.item_count !== undefined && result.item_count > 0 && (
+        <div className="mt-1 text-[11px]">
+          Items came back but normalizer didn't extract a count — the actor's output shape doesn't match `_merge_apify_items`. Paste the keys above and I'll adjust.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MetaResultBadge({ result }: { result: MetaTestResult }) {
+  if (!result.ok) {
+    return (
+      <div className="flex-1 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700">
+        {result.error || 'Connection failed.'}
+      </div>
+    )
+  }
+  return (
+    <div className="flex-1 rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-800">
+      <span className="font-medium">✓ Connected</span>
+      {result.message && <> · {result.message}</>}
     </div>
   )
 }

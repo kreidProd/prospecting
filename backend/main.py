@@ -154,6 +154,11 @@ CLICKUP_FIELD_ALIASES: dict = {
     "state": ["state", "state/province", "region"],
     "total_reviews": ["reviews", "review count", "total reviews", "num reviews", "number of reviews"],
     "rating": ["rating", "stars", "score", "google rating"],
+    "owner_name": [
+        "owner", "owner name", "business owner", "contact", "contact name",
+        "primary contact", "point of contact", "poc", "decision maker",
+        "first name last name", "full name",
+    ],
 }
 
 import re
@@ -782,6 +787,88 @@ def test_apify():
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "Connection failed"))
     return result
+
+
+class GoogleTestRequest(BaseModel):
+    domain: str
+    actor: Optional[str] = None
+
+
+@app.post("/api/google/test")
+def test_google_ads(body: GoogleTestRequest):
+    """Run the configured Apify Transparency actor against a single domain.
+
+    Returns enough raw detail to diagnose both actor-shape and data issues.
+    """
+    token = settings.get("apify_api_token")
+    actor = (body.actor or "").strip() or settings.get("apify_transparency_actor") or "automation-lab~google-ads-scraper"
+    if not token:
+        raise HTTPException(400, "Apify token is not set — the Transparency actor runs through Apify.")
+    dom = (body.domain or "").strip()
+    if not dom:
+        raise HTTPException(400, "Pass a domain like 'angi.com'.")
+
+    from ads_verifier import _domain_only, _merge_apify_items
+    clean = _domain_only(dom)
+    client = ApifyClient(token)
+    try:
+        run = client.start_actor(
+            actor,
+            run_input={
+                "domains": [clean],
+                "region": "US",
+                "startUrls": [{"url": f"https://adstransparency.google.com/?region=US&domain={clean}"}],
+            },
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Could not start actor '{actor}': {e}")
+
+    import time as _t
+    run_id = run.get("id")
+    dataset_id = run.get("defaultDatasetId")
+    deadline = _t.time() + 120
+    status_val = run.get("status")
+    while status_val not in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT", "TIMED_OUT"):
+        if _t.time() > deadline:
+            return {
+                "ok": False,
+                "actor": actor,
+                "domain": clean,
+                "error": "Actor run timed out (120s). Actor may exist but be slow — try again or swap actors.",
+                "run_id": run_id,
+            }
+        _t.sleep(3)
+        try:
+            run = client.get_run(run_id)
+        except Exception as e:
+            raise HTTPException(400, f"Failed polling run {run_id}: {e}")
+        status_val = run.get("status")
+        dataset_id = dataset_id or run.get("defaultDatasetId")
+
+    if status_val != "SUCCEEDED":
+        return {
+            "ok": False,
+            "actor": actor,
+            "domain": clean,
+            "error": f"Actor finished with status {status_val}.",
+            "run_id": run_id,
+        }
+
+    try:
+        items = client.get_dataset_items(dataset_id) if dataset_id else []
+    except Exception as e:
+        raise HTTPException(400, f"Fetching dataset {dataset_id}: {e}")
+
+    parsed = _merge_apify_items(items)
+    return {
+        "ok": True,
+        "actor": actor,
+        "domain": clean,
+        "item_count": len(items),
+        "parsed_ad_count": parsed.get(clean, {}).get("ad_count", 0),
+        "sample_item_keys": sorted(list(items[0].keys()))[:25] if items else [],
+        "sample_item": items[0] if items else None,
+    }
 
 
 @app.post("/api/meta/test")

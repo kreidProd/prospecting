@@ -221,6 +221,32 @@ export async function testApify(): Promise<ApifyTestResult> {
 
 export type MetaTestResult = { ok: boolean; message?: string; error?: string }
 
+export type GoogleAdsTestResult = {
+  ok: boolean
+  actor?: string
+  domain?: string
+  item_count?: number
+  parsed_ad_count?: number
+  sample_item_keys?: string[]
+  sample_item?: Record<string, unknown> | null
+  run_id?: string
+  error?: string
+}
+
+export async function testGoogleAds(
+  domain: string,
+  actor?: string,
+): Promise<GoogleAdsTestResult> {
+  const r = await fetch('/api/google/test', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ domain, actor }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) return { ok: false, error: data.detail || `HTTP ${r.status}` }
+  return data
+}
+
 export async function testMetaAds(): Promise<MetaTestResult> {
   const r = await fetch('/api/meta/test', { method: 'POST' })
   const data = await r.json().catch(() => ({}))
