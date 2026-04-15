@@ -1,13 +1,15 @@
 import os
 import time
 import uuid
+import secrets
 import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request, status
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 import csv
@@ -17,22 +19,68 @@ from db import DB
 from settings_store import SettingsStore
 from clickup_client import ClickUpClient, ClickUpError
 from apify_client import ApifyClient, ApifyError, TERMINAL_STATUSES
+from ads_verifier import MetaAdsVerifier, GoogleAdsApifyVerifier
 
 
 ROOT = Path(__file__).parent
-DATA = ROOT / "data"
+# DATA_DIR env var points to Railway's mounted volume in prod; defaults to ./data locally.
+DATA = Path(os.environ.get("DATA_DIR", ROOT / "data"))
 UPLOADS = DATA / "uploads"
 OUTPUTS = DATA / "outputs"
 for d in (DATA, UPLOADS, OUTPUTS):
     d.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Reboot Prospector")
+# Comma-separated origins for prod (e.g. https://prospector.pages.dev). Use "*" locally.
+_allowed = os.environ.get("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = [o.strip() for o in _allowed.split(",")] if _allowed != "*" else ["*"]
+
+# --- HTTP basic auth (single-user Stage 1) ----------------------------------
+# Set APP_PASSWORD env var in Railway. If unset, auth is disabled (local dev).
+APP_USERNAME = os.environ.get("APP_USERNAME", "admin")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+_auth = HTTPBasic(auto_error=False)
+
+# Paths that skip auth (for platform healthchecks).
+_PUBLIC_PATHS = {"/api/health", "/health", "/"}
+
+
+def require_auth(
+    request: Request,
+    credentials: Optional[HTTPBasicCredentials] = Depends(_auth),
+):
+    if request.url.path in _PUBLIC_PATHS:
+        return
+    if not APP_PASSWORD:
+        return  # auth disabled for local dev
+    if not credentials:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    user_ok = secrets.compare_digest(credentials.username, APP_USERNAME)
+    pass_ok = secrets.compare_digest(credentials.password, APP_PASSWORD)
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+app = FastAPI(
+    title="Reboot Prospector",
+    dependencies=[Depends(require_auth)],
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 db = DB(DATA / "prospector.db")
 settings = SettingsStore(DATA / "settings.json")
 
@@ -44,6 +92,28 @@ def _get_clickup_client() -> Optional[ClickUpClient]:
     """Return a ClickUp client if key is configured, else None."""
     key = settings.get("clickup_api_key")
     return ClickUpClient(key) if key else None
+
+
+def _build_ad_verifiers():
+    """Build Google + Meta ad verifiers from settings. Either may be None."""
+    if not settings.get("verify_live_ads"):
+        return None, None
+
+    google = None
+    apify_token = settings.get("apify_api_token")
+    actor_id = settings.get("apify_transparency_actor")
+    if apify_token and actor_id:
+        google = GoogleAdsApifyVerifier(
+            ApifyClient(apify_token),
+            actor_id=actor_id,
+        )
+
+    meta = None
+    meta_token = settings.get("meta_ads_access_token")
+    if meta_token:
+        meta = MetaAdsVerifier(meta_token)
+
+    return google, meta
 
 
 def _fetch_clickup_dedup_rows() -> tuple[list, Optional[str]]:
@@ -289,6 +359,7 @@ def start_run(req: RunRequest):
                     "clickup_error": clickup_err,
                     "uploaded_csv": bool(existing_path),
                 }
+            google_ver, meta_ver = _build_ad_verifiers()
             summary = run_pipeline(
                 str(scraped_path),
                 str(existing_path) if existing_path else None,
@@ -297,6 +368,8 @@ def start_run(req: RunRequest):
                 on_progress=on_progress,
                 target_tiers=target_tiers,
                 existing_rows=clickup_rows or None,
+                google_verifier=google_ver,
+                meta_verifier=meta_ver,
             )
             with RUN_LOCK:
                 RUNS[run_id]["status"] = "done"
@@ -627,6 +700,7 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
 
     output_path = Path(RUNS[run_id]["output_path"])
     try:
+        google_ver, meta_ver = _build_ad_verifiers()
         summary = run_pipeline(
             str(scraped_path),
             None,
@@ -635,6 +709,8 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
             on_progress=on_progress,
             target_tiers=target_tiers,
             existing_rows=clickup_rows or None,
+            google_verifier=google_ver,
+            meta_verifier=meta_ver,
         )
         with RUN_LOCK:
             RUNS[run_id]["status"] = "done"
@@ -706,6 +782,37 @@ def test_apify():
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "Connection failed"))
     return result
+
+
+@app.post("/api/meta/test")
+def test_meta_ads():
+    """Hit Meta's Ads Archive with a benign query to validate the token."""
+    token = settings.get("meta_ads_access_token")
+    if not token:
+        raise HTTPException(400, "Meta Ads access token is not set.")
+    import requests as _r
+    try:
+        r = _r.get(
+            "https://graph.facebook.com/v19.0/ads_archive",
+            params={
+                "access_token": token,
+                "search_terms": "acme",
+                "ad_reached_countries": "['US']",
+                "ad_active_status": "ACTIVE",
+                "fields": "id",
+                "limit": 1,
+            },
+            timeout=10,
+        )
+    except _r.RequestException as e:
+        raise HTTPException(400, f"Network: {e}")
+    if r.status_code != 200:
+        try:
+            err = r.json().get("error", {}).get("message", f"HTTP {r.status_code}")
+        except Exception:
+            err = f"HTTP {r.status_code}"
+        raise HTTPException(400, err)
+    return {"ok": True, "message": "Meta Ads Library API reachable."}
 
 
 # --- ClickUp diagnostics -------------------------------------------------

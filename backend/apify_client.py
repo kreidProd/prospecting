@@ -76,6 +76,17 @@ class ApifyClient:
             raise ApifyError(f"Apify start HTTP {r.status_code}: {r.text[:300]}")
         return (r.json() or {}).get("data", {}) or {}
 
+    def start_actor(self, actor_id: str, run_input: dict) -> dict:
+        """Start a run of any Apify actor by id (e.g. 'user~actor-slug')."""
+        url = f"{APIFY_API}/acts/{actor_id}/runs"
+        try:
+            r = requests.post(url, headers=self.headers, json=run_input, timeout=30)
+        except requests.RequestException as e:
+            raise ApifyError(f"Network starting actor: {e}") from e
+        if r.status_code not in (200, 201):
+            raise ApifyError(f"Apify start actor HTTP {r.status_code}: {r.text[:300]}")
+        return (r.json() or {}).get("data", {}) or {}
+
     def get_run(self, run_id: str) -> dict:
         try:
             r = requests.get(

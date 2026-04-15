@@ -4,9 +4,11 @@ import {
   saveSettings,
   testClickUp,
   testApify,
+  testMetaAds,
   type AppSettings,
   type ClickUpTestResult,
   type ApifyTestResult,
+  type MetaTestResult,
 } from '../api'
 
 export function Settings() {
@@ -18,6 +20,8 @@ export function Settings() {
   const [testResult, setTestResult] = useState<ClickUpTestResult | null>(null)
   const [testingApify, setTestingApify] = useState(false)
   const [apifyResult, setApifyResult] = useState<ApifyTestResult | null>(null)
+  const [testingMeta, setTestingMeta] = useState(false)
+  const [metaResult, setMetaResult] = useState<MetaTestResult | null>(null)
 
   useEffect(() => {
     getSettings()

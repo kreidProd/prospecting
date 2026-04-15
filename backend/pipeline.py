@@ -23,6 +23,8 @@ from typing import Callable, Optional
 
 import requests
 
+from ads_verifier import NULL_VERIFIER
+
 
 # --- Qualifying floor constants -------------------------------------------
 MIN_REVIEWS = 40
@@ -198,8 +200,19 @@ def verify_phone_on_site(phone: str, html: str) -> bool:
 
 # --- Tier classification --------------------------------------------------
 
-def classify_tier(row: dict, signals: Optional[dict], locations: int, status: str):
-    """Return (tier, skip_reason). skip_reason is '' unless tier == 'SKIP'."""
+def classify_tier(
+    row: dict,
+    signals: Optional[dict],
+    locations: int,
+    status: str,
+    verified_live: bool = False,
+):
+    """Return (tier, skip_reason). skip_reason is '' unless tier == 'SKIP'.
+
+    `verified_live` is set True when Transparency Center or Meta Ads Library
+    confirmed at least one live ad. That promotes 1B→1A (and 3B→3A on
+    multi-loc) instead of the old gclid-in-HTML proxy.
+    """
     reviews = _parse_int(row.get("reviews", ""))
     rating = _parse_float(row.get("rating", ""))
     has_website = bool(row.get("website"))
@@ -213,7 +226,8 @@ def classify_tier(row: dict, signals: Optional[dict], locations: int, status: st
     if locations >= 2:
         if reviews < MULTI_LOC_MIN_REVIEWS:
             return "SKIP", f"multi_loc_low_reviews({reviews})"
-        has_ad_history = signals.get("google_ads_pixel") or signals.get("gclid_in_html")
+        has_pixel = signals.get("google_ads_pixel") or signals.get("meta_pixel")
+        has_ad_history = has_pixel or signals.get("gclid_in_html") or verified_live
         if has_ad_history:
             return "3A", ""
         if signals.get("ga4") or signals.get("gtm"):
@@ -231,13 +245,13 @@ def classify_tier(row: dict, signals: Optional[dict], locations: int, status: st
     has_gclid = signals.get("gclid_in_html", False)
     has_analytics = signals.get("ga4") or signals.get("gtm")
 
-    currently_running = has_pixel or has_gclid
+    currently_running = has_pixel or has_gclid or verified_live
     if currently_running:
         if has_conversion:
             return "SKIP", "already_tracking_conversions"
-        # Distinction between 1A (live) and 1B (paused) needs Transparency Center.
-        # Without it, pixel + gclid => 1A, pixel alone => 1B.
-        if has_gclid:
+        # 1A requires confirmed live ad (Transparency Center or Meta Ad Library)
+        # OR gclid evidence as legacy proxy. Otherwise pixel-only -> 1B.
+        if verified_live or has_gclid:
             return "1A", ""
         return "1B", ""
 
@@ -250,6 +264,7 @@ def classify_tier(row: dict, signals: Optional[dict], locations: int, status: st
 
 SCORE_WEIGHTS = {
     "google_ads_active": 35,
+    "verified_live_ad": 15,  # bonus on top of pixel signal when confirmed live
     "gclid_traffic": 10,
     "no_conversion_tracking": 20,
     "meta_pixel": 8,
@@ -261,7 +276,7 @@ SCORE_WEIGHTS = {
 }
 
 
-def compute_fit_score(row: dict, signals: dict, tier: str, phone_verified: bool):
+def compute_fit_score(row: dict, signals: dict, tier: str, phone_verified: bool, verified_live: bool = False):
     """Return (score_0_to_100, breakdown_tokens)."""
     if tier == "SKIP":
         return 0, ["skip"]
@@ -274,9 +289,12 @@ def compute_fit_score(row: dict, signals: dict, tier: str, phone_verified: bool)
         score += weight
         breakdown.append(f"+{weight} {label}")
 
-    has_ads_active = signals.get("google_ads_pixel") or signals.get("gclid_in_html")
+    has_ads_active = signals.get("google_ads_pixel") or signals.get("gclid_in_html") or verified_live
     if has_ads_active:
         add(SCORE_WEIGHTS["google_ads_active"], "google_ads_active")
+
+    if verified_live:
+        add(SCORE_WEIGHTS["verified_live_ad"], "verified_live_ad (transparency)")
 
     if signals.get("gclid_in_html"):
         add(SCORE_WEIGHTS["gclid_traffic"], "paid_traffic_evidence")
@@ -322,6 +340,8 @@ def run_pipeline(
     timeout: float = 10.0,
     target_tiers: Optional[list] = None,
     existing_rows: Optional[list] = None,
+    google_verifier=None,
+    meta_verifier=None,
 ):
     scraped = load_csv(scraped_path)
     existing = list(existing_rows) if existing_rows else []
@@ -349,6 +369,16 @@ def run_pipeline(
     lock = threading.Lock()
     counter = {"n": 0}
 
+    google = google_verifier or NULL_VERIFIER
+    meta = meta_verifier or NULL_VERIFIER
+
+    # Transparency Center via Apify is a batched pre-pass: one actor run covers
+    # every domain in this pipeline, cheaper and faster than per-row lookups.
+    if google.configured and unique:
+        if on_progress:
+            on_progress(0, total, "verifying_google_ads")
+        google.prefetch([r.get("website", "") for r in unique])
+
     # Emit an initial progress event so the UI shows `total` immediately
     # instead of sitting at "0/?" until the first fetch completes.
     if on_progress:
@@ -359,8 +389,17 @@ def run_pipeline(
         signals = detect_signals(html) if html else None
         locations = detect_location_count(html) if html else 1
         phone_verified = verify_phone_on_site(row.get("phone", ""), html or "")
-        tier, skip_reason = classify_tier(row, signals, locations, status)
-        score, breakdown = compute_fit_score(row, signals or {}, tier, phone_verified)
+
+        domain = row.get("website", "")
+        biz = row.get("business_name", "")
+        g_res = google.verify(domain, biz) if domain else {"live": False, "ad_count": 0, "source": "google", "error": "no_url"}
+        m_res = meta.verify(domain, biz) if (domain or biz) else {"live": False, "ad_count": 0, "source": "meta", "error": "no_url"}
+        verified_live = bool(g_res.get("live") or m_res.get("live"))
+
+        tier, skip_reason = classify_tier(row, signals, locations, status, verified_live=verified_live)
+        score, breakdown = compute_fit_score(
+            row, signals or {}, tier, phone_verified, verified_live=verified_live
+        )
 
         out = dict(row)
         out["fetch_status"] = status
@@ -370,7 +409,24 @@ def run_pipeline(
         out["score_breakdown"] = "; ".join(breakdown)
         out["phone_verified"] = "yes" if phone_verified else "no"
         out["location_count"] = str(locations)
-        out["ad_status_source"] = "tag_detection" if signals else "n/a"
+
+        # Live-ad verification fields
+        out["google_ads_live"] = "yes" if g_res.get("live") else "no"
+        out["google_ads_count"] = str(g_res.get("ad_count", 0))
+        out["google_ads_error"] = g_res.get("error") or ""
+        out["meta_ads_live"] = "yes" if m_res.get("live") else "no"
+        out["meta_ads_count"] = str(m_res.get("ad_count", 0))
+        out["meta_ads_error"] = m_res.get("error") or ""
+
+        # Tell the UI which sources actually contributed
+        sources = []
+        if signals:
+            sources.append("tag_detection")
+        if google.configured and not g_res.get("error"):
+            sources.append("google_transparency")
+        if meta.configured and not m_res.get("error"):
+            sources.append("meta_ad_library")
+        out["ad_status_source"] = ",".join(sources) or "n/a"
 
         keys = ("google_ads_pixel", "conversion_event", "gtm", "ga4", "meta_pixel", "gclid_in_html")
         for k in keys:

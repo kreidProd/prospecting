@@ -9,6 +9,9 @@ DEFAULTS = {
     "neverbounce_api_key": "",
     "clickup_api_key": "",
     "clickup_list_id": "",
+    "meta_ads_access_token": "",
+    "apify_transparency_actor": "curious_coder/google-ads-transparency-center",
+    "verify_live_ads": True,
     "default_radius_miles": 25,
     "default_limit": 500,
     "fetch_timeout_seconds": 10,
@@ -23,6 +26,7 @@ SECRET_FIELDS = {
     "hunter_api_key",
     "neverbounce_api_key",
     "clickup_api_key",
+    "meta_ads_access_token",
 }
 
 

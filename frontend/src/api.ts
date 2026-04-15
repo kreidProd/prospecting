@@ -157,6 +157,10 @@ export type AppSettings = {
   clickup_api_key: string
   clickup_api_key_set: boolean
   clickup_list_id: string
+  meta_ads_access_token: string
+  meta_ads_access_token_set: boolean
+  apify_transparency_actor: string
+  verify_live_ads: boolean
   default_radius_miles: number
   default_limit: number
   fetch_timeout_seconds: number
@@ -212,5 +216,14 @@ export async function testApify(): Promise<ApifyTestResult> {
   if (!r.ok) {
     return { ok: false, error: data.detail || `HTTP ${r.status}` }
   }
+  return data
+}
+
+export type MetaTestResult = { ok: boolean; message?: string; error?: string }
+
+export async function testMetaAds(): Promise<MetaTestResult> {
+  const r = await fetch('/api/meta/test', { method: 'POST' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) return { ok: false, error: data.detail || `HTTP ${r.status}` }
   return data
 }
