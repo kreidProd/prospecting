@@ -78,7 +78,8 @@ class ApifyClient:
 
     def start_actor(self, actor_id: str, run_input: dict) -> dict:
         """Start a run of any Apify actor by id (e.g. 'user~actor-slug')."""
-        url = f"{APIFY_API}/acts/{actor_id}/runs"
+        slug = actor_id.replace("/", "~", 1)
+        url = f"{APIFY_API}/acts/{slug}/runs"
         try:
             r = requests.post(url, headers=self.headers, json=run_input, timeout=30)
         except requests.RequestException as e:
