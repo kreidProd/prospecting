@@ -462,6 +462,9 @@ class SettingsPatch(BaseModel):
     neverbounce_api_key: Optional[str] = None
     clickup_api_key: Optional[str] = None
     clickup_list_id: Optional[str] = None
+    meta_ads_access_token: Optional[str] = None
+    apify_transparency_actor: Optional[str] = None
+    verify_live_ads: Optional[bool] = None
     default_radius_miles: Optional[int] = None
     default_limit: Optional[int] = None
     fetch_timeout_seconds: Optional[int] = None
