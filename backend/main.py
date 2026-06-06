@@ -20,6 +20,7 @@ from settings_store import SettingsStore
 from clickup_client import ClickUpClient, ClickUpError
 from apify_client import ApifyClient, ApifyError, TERMINAL_STATUSES
 from ads_verifier import MetaAdsVerifier, GoogleAdsApifyVerifier
+from google_transparency_playwright import GoogleAdsTransparencyPlaywrightVerifier
 
 
 ROOT = Path(__file__).parent
@@ -100,13 +101,24 @@ def _build_ad_verifiers():
         return None, None
 
     google = None
-    apify_token = settings.get("apify_api_token")
-    actor_id = settings.get("apify_transparency_actor")
-    if apify_token and actor_id:
-        google = GoogleAdsApifyVerifier(
-            ApifyClient(apify_token),
-            actor_id=actor_id,
+    backend_choice = (settings.get("google_transparency_backend") or "apify").lower()
+    if backend_choice == "playwright":
+        try:
+            conc = int(settings.get("google_transparency_concurrency") or 4)
+        except (TypeError, ValueError):
+            conc = 4
+        google = GoogleAdsTransparencyPlaywrightVerifier(
+            region=settings.get("google_transparency_region") or "US",
+            concurrency=max(1, conc),
         )
+    else:
+        apify_token = settings.get("apify_api_token")
+        actor_id = settings.get("apify_transparency_actor")
+        if apify_token and actor_id:
+            google = GoogleAdsApifyVerifier(
+                ApifyClient(apify_token),
+                actor_id=actor_id,
+            )
 
     meta = None
     meta_token = settings.get("meta_ads_access_token")
@@ -136,9 +148,12 @@ def _fetch_clickup_dedup_rows() -> tuple[list, Optional[str]]:
 class RunRequest(BaseModel):
     scraped_id: str
     existing_id: Optional[str] = None
+    foundation_id: Optional[str] = None
     name: str = "Untitled run"
     target_tiers: Optional[list[str]] = None
     skip_clickup_dedup: bool = False
+    owner_only: bool = False
+    sync_to_close: bool = False
 
 
 # Canonical pipeline column -> list of normalized header aliases we'll accept.
@@ -320,6 +335,17 @@ def start_run(req: RunRequest):
         if cand.exists():
             existing_path = cand
 
+    # Foundation CSV: re-tiered AND used as the dedup base for the prospect
+    # CSV. Anything in the prospect CSV that matches a foundation row by
+    # phone or domain is dropped before processing.
+    foundation_path = None
+    if req.foundation_id:
+        for prefix in ("foundation", "scraped", "existing"):
+            cand = UPLOADS / f"{prefix}_{req.foundation_id}.csv"
+            if cand.exists():
+                foundation_path = cand
+                break
+
     output_path = OUTPUTS / f"run_{run_id}.csv"
 
     target_tiers = req.target_tiers or None
@@ -375,7 +401,23 @@ def start_run(req: RunRequest):
                 existing_rows=clickup_rows or None,
                 google_verifier=google_ver,
                 meta_verifier=meta_ver,
+                owner_only=req.owner_only,
+                foundation_path=str(foundation_path) if foundation_path else None,
+                google_places_api_key=settings.get("google_places_api_key") or "",
             )
+            # Optional: push every result's tier/reviews/rating into the
+            # matching Close lead (keyed by website domain).
+            if req.sync_to_close:
+                close_key = settings.get("close_api_key") or ""
+                if close_key and isinstance(summary, dict) and summary.get("results"):
+                    try:
+                        from close_client import CloseClient
+                        client = CloseClient(close_key)
+                        sync_stats = client.sync_results(summary["results"])
+                        summary["close_sync"] = sync_stats
+                    except Exception as e:
+                        summary["close_sync"] = {"error": str(e)}
+
             with RUN_LOCK:
                 RUNS[run_id]["status"] = "done"
                 RUNS[run_id]["summary"] = summary
@@ -401,6 +443,9 @@ def _public_run(r):
             "duplicates": s.get("duplicates"),
             "processed": s.get("processed"),
             "tier_distribution": s.get("tier_distribution"),
+            "close_sync": s.get("close_sync"),
+            "foundation_size": s.get("foundation_size"),
+            "foundation_collisions": s.get("foundation_collisions"),
         }
     return pub
 
@@ -465,6 +510,11 @@ class SettingsPatch(BaseModel):
     meta_ads_access_token: Optional[str] = None
     apify_transparency_actor: Optional[str] = None
     verify_live_ads: Optional[bool] = None
+    google_transparency_backend: Optional[str] = None
+    google_transparency_region: Optional[str] = None
+    google_transparency_concurrency: Optional[int] = None
+    google_places_api_key: Optional[str] = None
+    close_api_key: Optional[str] = None
     default_radius_miles: Optional[int] = None
     default_limit: Optional[int] = None
     fetch_timeout_seconds: Optional[int] = None
@@ -508,6 +558,22 @@ INDUSTRY_NAME_FILTERS: dict = {
 # Keep the old roofing constant around for the Apify flow that still uses it
 ROOFING_NAME_TOKENS = tuple(INDUSTRY_NAME_FILTERS["roofing"])
 
+# Fan-out: each industry bucket expands into multiple Google Maps search queries
+# so picking "Roofing" hits roofers under several canonical category names.
+# Each query is paired with the city/state at scrape time.
+INDUSTRY_SEARCH_QUERIES: dict = {
+    "roofing": ["roofing contractor", "roof repair", "gutter installation", "siding contractor"],
+    "restoration": ["storm damage restoration", "water damage restoration", "fire damage restoration", "mold remediation"],
+    "hvac": ["hvac contractor", "air conditioning repair", "heating contractor"],
+    "plumbing": ["plumber", "plumbing contractor", "drain cleaning"],
+    "electrical": ["electrician", "electrical contractor"],
+    "solar": ["solar panel installation", "solar contractor"],
+    "pest_control": ["pest control", "exterminator", "termite control"],
+    "landscaping": ["landscaping", "tree service", "lawn care"],
+    "painting": ["painting contractor", "exterior painting"],
+    "flooring": ["flooring contractor", "hardwood floor installation", "tile installation"],
+}
+
 
 def _matches_industry(name: str, tokens: list, categories: Optional[list] = None) -> bool:
     """Return True if the name (or Google category) contains any industry token.
@@ -543,18 +609,24 @@ def get_industry_filters():
     }
 
 
-def _apify_items_to_csv(items: list, path) -> tuple[int, int]:
+def _apify_items_to_csv(items: list, path, industries: Optional[list] = None) -> tuple[int, int]:
     """Write Apify google-places items into a CSV that the pipeline loader understands.
 
-    Returns (kept, dropped) where dropped is the count of non-roofing businesses
-    filtered out by name.
+    `industries` is the list of industry ids the user selected in the UI. Rows
+    whose business name (or Google category) doesn't match ANY of those
+    industries are dropped. If no industries are supplied, no filter is applied.
+
+    Returns (kept, dropped).
     """
+    tokens: list = []
+    for ind in industries or []:
+        tokens.extend(INDUSTRY_NAME_FILTERS.get(ind, []))
     rows = []
     dropped = 0
     for it in items:
         name = (it.get("title") or it.get("name") or "").strip()
         categories = it.get("categories") or ([it.get("categoryName")] if it.get("categoryName") else [])
-        if not _is_roofing_business(name, categories):
+        if tokens and not _matches_industry(name, tokens, categories):
             dropped += 1
             continue
         emails = it.get("emails") or it.get("emailsFromWebsite") or []
@@ -597,24 +669,29 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
         city, state = parts[0].strip(), parts[1].strip()
         location = f"{city}, {state}".strip(", ")
         for industry in industries:
-            search = f"{industry} in {location}".strip()
-            try:
-                data = apify.start_google_places_run(search, location, limit)
-                jobs.append({
-                    "apify_run_id": data.get("id"),
-                    "dataset_id": data.get("defaultDatasetId"),
-                    "status": data.get("status") or "RUNNING",
-                    "search": search,
-                    "error": None,
-                })
-            except ApifyError as e:
-                jobs.append({
-                    "apify_run_id": None,
-                    "dataset_id": None,
-                    "status": "FAILED",
-                    "search": search,
-                    "error": str(e),
-                })
+            # Expand each broad industry bucket into its list of canonical
+            # Google Maps queries. Fall back to the raw id so unknown values
+            # still produce a query instead of silently dropping.
+            queries = INDUSTRY_SEARCH_QUERIES.get(industry) or [industry]
+            for query in queries:
+                search = f"{query} in {location}".strip()
+                try:
+                    data = apify.start_google_places_run(search, location, limit)
+                    jobs.append({
+                        "apify_run_id": data.get("id"),
+                        "dataset_id": data.get("defaultDatasetId"),
+                        "status": data.get("status") or "RUNNING",
+                        "search": search,
+                        "error": None,
+                    })
+                except ApifyError as e:
+                    jobs.append({
+                        "apify_run_id": None,
+                        "dataset_id": None,
+                        "status": "FAILED",
+                        "search": search,
+                        "error": str(e),
+                    })
 
     with RUN_LOCK:
         RUNS[run_id]["scrape_progress"] = {
@@ -663,7 +740,7 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
             j["error"] = str(e)
 
     scraped_path = UPLOADS / f"autoscrape_{run_id}.csv"
-    scraped_count, filtered_non_roofing = _apify_items_to_csv(all_items, scraped_path)
+    scraped_count, filtered_non_roofing = _apify_items_to_csv(all_items, scraped_path, industries)
     with RUN_LOCK:
         RUNS[run_id]["scraped_count"] = scraped_count
         RUNS[run_id]["filtered_non_roofing"] = filtered_non_roofing
@@ -671,9 +748,10 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
     if scraped_count == 0:
         total_returned = len(all_items)
         if filtered_non_roofing and total_returned > 0:
+            industry_label = "/".join(industries) if industries else "selected industries"
             msg = (
-                f"No roofing matches — Apify returned {total_returned} businesses "
-                f"but none had 'roof' or 'exterior' in the name. Try different search terms."
+                f"No matches for {industry_label} — Apify returned {total_returned} businesses "
+                f"but none had the required keywords in the name or category. Try different search terms."
             )
         else:
             msg = "No results — all Apify jobs returned empty. Check your search terms or Apify account balance."
@@ -719,6 +797,7 @@ def _run_autoscrape(run_id, cities, industries, radius, limit, target_tiers):
             existing_rows=clickup_rows or None,
             google_verifier=google_ver,
             meta_verifier=meta_ver,
+            google_places_api_key=settings.get("google_places_api_key") or "",
         )
         with RUN_LOCK:
             RUNS[run_id]["status"] = "done"
@@ -804,71 +883,37 @@ def test_google_ads(body: GoogleTestRequest):
     Returns enough raw detail to diagnose both actor-shape and data issues.
     """
     token = settings.get("apify_api_token")
-    actor = (body.actor or "").strip() or settings.get("apify_transparency_actor") or "automation-lab~google-ads-scraper"
+    actor = (body.actor or "").strip() or settings.get("apify_transparency_actor") or "burbn~google-ads-search"
     if not token:
         raise HTTPException(400, "Apify token is not set — the Transparency actor runs through Apify.")
     dom = (body.domain or "").strip()
     if not dom:
         raise HTTPException(400, "Pass a domain like 'angi.com'.")
 
-    from ads_verifier import _domain_only, _merge_apify_items
+    from ads_verifier import _domain_only, _count_ads
     clean = _domain_only(dom)
     client = ApifyClient(token)
     try:
-        run = client.start_actor(
+        items = client.run_sync_get_dataset_items(
             actor,
             run_input={
-                "domains": [clean],
-                "region": "US",
-                "startUrls": [{"url": f"https://adstransparency.google.com/?region=US&domain={clean}"}],
+                "countryCode": "US",
+                "domain": clean,
+                "format": "ALL",
+                "maxResults": 40,
             },
+            timeout=180,
         )
     except Exception as e:
-        raise HTTPException(400, f"Could not start actor '{actor}': {e}")
+        raise HTTPException(400, f"Actor run failed for '{actor}': {e}")
 
-    import time as _t
-    run_id = run.get("id")
-    dataset_id = run.get("defaultDatasetId")
-    deadline = _t.time() + 120
-    status_val = run.get("status")
-    while status_val not in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT", "TIMED_OUT"):
-        if _t.time() > deadline:
-            return {
-                "ok": False,
-                "actor": actor,
-                "domain": clean,
-                "error": "Actor run timed out (120s). Actor may exist but be slow — try again or swap actors.",
-                "run_id": run_id,
-            }
-        _t.sleep(3)
-        try:
-            run = client.get_run(run_id)
-        except Exception as e:
-            raise HTTPException(400, f"Failed polling run {run_id}: {e}")
-        status_val = run.get("status")
-        dataset_id = dataset_id or run.get("defaultDatasetId")
-
-    if status_val != "SUCCEEDED":
-        return {
-            "ok": False,
-            "actor": actor,
-            "domain": clean,
-            "error": f"Actor finished with status {status_val}.",
-            "run_id": run_id,
-        }
-
-    try:
-        items = client.get_dataset_items(dataset_id) if dataset_id else []
-    except Exception as e:
-        raise HTTPException(400, f"Fetching dataset {dataset_id}: {e}")
-
-    parsed = _merge_apify_items(items)
+    ad_count = _count_ads(items)
     return {
         "ok": True,
         "actor": actor,
         "domain": clean,
         "item_count": len(items),
-        "parsed_ad_count": parsed.get(clean, {}).get("ad_count", 0),
+        "parsed_ad_count": ad_count,
         "sample_item_keys": sorted(list(items[0].keys()))[:25] if items else [],
         "sample_item": items[0] if items else None,
     }

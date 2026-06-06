@@ -20,23 +20,35 @@ code can always call `.verify(domain, business_name)` without branching.
 from __future__ import annotations
 
 import re
-import time
+import threading
 from typing import Optional
-from urllib.parse import quote
 
 import requests
 
 
+_COMMON_SUBDOMAINS = ("www", "m", "mobile", "en", "us", "web", "shop", "store", "blog")
+
+
 def _domain_only(url_or_domain: str) -> str:
-    """Reduce any input to a bare 'example.com' form."""
+    """Reduce any input to a bare 'example.com' form. Strips scheme, auth,
+    path, query, fragment, port, trailing dot, and a single leading common
+    subdomain (www, m, etc.)."""
     if not url_or_domain:
         return ""
-    s = url_or_domain.lower().strip()
-    s = re.sub(r"^https?://", "", s)
-    s = re.sub(r"^www\.", "", s)
-    s = s.split("/")[0]
-    s = s.split("?")[0]
-    return s.strip()
+    s = url_or_domain.strip().lower()
+    s = re.sub(r"^[a-z][a-z0-9+\-.]*://", "", s)
+    s = s.split("@", 1)[-1]
+    s = s.split("/", 1)[0]
+    s = s.split("?", 1)[0]
+    s = s.split("#", 1)[0]
+    s = s.split(":", 1)[0]
+    s = s.rstrip(".").strip()
+    if not s:
+        return ""
+    parts = s.split(".")
+    if len(parts) > 2 and parts[0] in _COMMON_SUBDOMAINS:
+        parts = parts[1:]
+    return ".".join(parts)
 
 
 # --- Meta Ad Library ------------------------------------------------------
@@ -119,138 +131,96 @@ def _any_link_mentions(captions: list, dom: str) -> bool:
 
 
 # --- Google Ads Transparency Center (via Apify) --------------------------
-# Apify has multiple community actors that scrape adstransparency.google.com.
-# We keep the actor ID in settings so the user can swap it if one breaks.
-# Expected input shape (tested actors we've seen):
-#     { "domains": ["example.com", ...], "region": "US" }
-#     { "startUrls": [{"url": "https://adstransparency.google.com/?region=US&domain=..."}] }
-# Output items are merged into a {domain -> result} map by `_merge_apify_items`.
+# Default actor: burbn~google-ads-search. Input shape:
+#     { "countryCode": "US", "domain": "example.com", "format": "ALL", "maxResults": 40 }
+# Output: one dataset item per ad (or a rollup with ad_count — see _count_ads).
 
 
 class GoogleAdsApifyVerifier:
+    """Per-domain verifier backed by burbn/google-ads-search (or similar).
+
+    The chosen actor takes ONE domain per run and returns a dataset where each
+    item is an ad. We call /run-sync-get-dataset-items once per prospect and
+    cache the result by domain in-process so parallel workers never double-hit
+    the same domain.
+    """
     def __init__(
         self,
         apify_client,
         actor_id: str,
         region: str = "US",
-        run_timeout_seconds: int = 180,
+        run_timeout_seconds: int = 120,
+        max_results: int = 3,
     ):
         self.apify = apify_client
         self.actor_id = actor_id
         self.region = region
         self.run_timeout = run_timeout_seconds
-        self._results: dict = {}
-        self._error: Optional[str] = None
+        self.max_results = max_results
+        self._cache: dict = {}
+        self._lock = threading.Lock()
 
     @property
     def configured(self) -> bool:
         return bool(self.apify and self.actor_id)
 
     def prefetch(self, domains: list) -> None:
-        """Run one Apify job for all domains and cache results on the instance."""
-        if not self.configured:
-            self._error = "not_configured"
-            return
-        clean = sorted({_domain_only(d) for d in domains if d})
-        clean = [d for d in clean if d]
-        if not clean:
-            return
-
-        try:
-            run = self.apify.start_actor(
-                self.actor_id,
-                run_input={
-                    "domains": clean,
-                    "region": self.region,
-                    "startUrls": [
-                        {"url": f"https://adstransparency.google.com/?region={self.region}&domain={quote(d)}"}
-                        for d in clean
-                    ],
-                },
-            )
-        except Exception as e:
-            self._error = f"start_actor:{e}"
-            return
-
-        deadline = time.time() + self.run_timeout
-        status = run.get("status")
-        dataset_id = run.get("defaultDatasetId") or run.get("dataset_id")
-        run_id = run.get("id")
-        while status not in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT", "TIMED_OUT"):
-            if time.time() > deadline:
-                self._error = "run_timeout"
-                return
-            time.sleep(3)
-            try:
-                run = self.apify.get_run(run_id)
-            except Exception as e:
-                self._error = f"poll:{e}"
-                return
-            status = run.get("status")
-            dataset_id = dataset_id or run.get("defaultDatasetId")
-
-        if status != "SUCCEEDED" or not dataset_id:
-            self._error = f"actor_{status.lower()}"
-            return
-
-        try:
-            items = self.apify.get_dataset_items(dataset_id)
-        except Exception as e:
-            self._error = f"dataset:{e}"
-            return
-
-        self._results = _merge_apify_items(items)
+        """No-op. Kept for API compatibility with the previous batched design."""
+        return
 
     def verify(self, domain: str, business_name: str = "") -> dict:
         if not self.configured:
             return {"live": False, "ad_count": 0, "source": "google", "error": "not_configured"}
-        if self._error:
-            return {"live": False, "ad_count": 0, "source": "google", "error": self._error}
-        res = self._results.get(_domain_only(domain))
-        if res is None:
-            return {"live": False, "ad_count": 0, "source": "google", "error": "no_data"}
-        return {
-            "live": res["ad_count"] > 0,
-            "ad_count": res["ad_count"],
+        dom = _domain_only(domain)
+        if not dom:
+            return {"live": False, "ad_count": 0, "source": "google", "error": "no_domain"}
+
+        with self._lock:
+            cached = self._cache.get(dom)
+        if cached is not None:
+            return cached
+
+        try:
+            items = self.apify.run_sync_get_dataset_items(
+                self.actor_id,
+                run_input={
+                    "countryCode": self.region,
+                    "domain": dom,
+                    "format": "ALL",
+                    "maxResults": self.max_results,
+                },
+                timeout=self.run_timeout,
+            )
+        except Exception as e:
+            result = {"live": False, "ad_count": 0, "source": "google", "error": f"run:{e}"}
+            with self._lock:
+                self._cache[dom] = result
+            return result
+
+        ad_count = _count_ads(items)
+        result = {
+            "live": ad_count > 0,
+            "ad_count": ad_count,
             "source": "google",
             "error": None,
         }
+        with self._lock:
+            self._cache[dom] = result
+        return result
 
 
-def _merge_apify_items(items: list) -> dict:
-    """Normalize whatever the actor returns into {domain -> {ad_count}}.
-
-    Actors vary. We try common field names: `domain`, `advertiser_domain`,
-    `website`; and count ads via `ads`, `creatives`, `results`, or just by
-    counting records per domain.
+def _count_ads(items: list) -> int:
+    """Count ads in a dataset. Most actors emit one item per ad so len() works,
+    but some roll up totals — respect an explicit 'ad_count'-style field if present.
     """
-    out: dict = {}
-    for it in items or []:
-        dom = _domain_only(
-            it.get("domain") or it.get("advertiser_domain") or it.get("website") or it.get("url") or ""
-        )
-        if not dom:
-            continue
-        # Try to read an explicit ad count first
-        count = None
-        for key in ("ad_count", "adsCount", "total_ads", "ads_count"):
-            if isinstance(it.get(key), int):
-                count = it[key]
-                break
-        # Otherwise len() the usual list fields
-        if count is None:
-            for key in ("ads", "creatives", "results"):
-                val = it.get(key)
-                if isinstance(val, list):
-                    count = len(val)
-                    break
-        # Last resort: each item = one ad
-        if count is None:
-            count = 1
-
-        prev = out.get(dom, {"ad_count": 0})
-        out[dom] = {"ad_count": prev["ad_count"] + count}
-    return out
+    if not items:
+        return 0
+    first = items[0] if isinstance(items[0], dict) else {}
+    for key in ("ad_count", "adsCount", "total_ads", "ads_count"):
+        val = first.get(key)
+        if isinstance(val, int) and val > 0:
+            return val
+    return len(items)
 
 
 # --- Convenience: null verifier the pipeline can always call -------------

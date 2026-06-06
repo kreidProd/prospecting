@@ -88,6 +88,34 @@ class ApifyClient:
             raise ApifyError(f"Apify start actor HTTP {r.status_code}: {r.text[:300]}")
         return (r.json() or {}).get("data", {}) or {}
 
+    def run_sync_get_dataset_items(
+        self,
+        actor_id: str,
+        run_input: dict,
+        timeout: int = 180,
+    ) -> list:
+        """Start a run, wait for it to finish, return dataset items in one call.
+
+        Uses Apify's /run-sync-get-dataset-items endpoint so we don't have to
+        poll. Returns [] on any non-200 response — callers can treat that as
+        "no ads found" without a separate error path.
+        """
+        url = f"{APIFY_API}/acts/{actor_id}/run-sync-get-dataset-items"
+        try:
+            r = requests.post(
+                url,
+                headers={**self.headers, "content-type": "application/json"},
+                json=run_input,
+                params={"clean": "true", "format": "json"},
+                timeout=timeout,
+            )
+        except requests.RequestException as e:
+            raise ApifyError(f"Network run-sync: {e}") from e
+        if r.status_code not in (200, 201):
+            raise ApifyError(f"Apify run-sync HTTP {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        return data if isinstance(data, list) else []
+
     def get_run(self, run_id: str) -> dict:
         try:
             r = requests.get(

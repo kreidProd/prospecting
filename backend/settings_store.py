@@ -10,7 +10,12 @@ DEFAULTS = {
     "clickup_api_key": "",
     "clickup_list_id": "",
     "meta_ads_access_token": "",
-    "apify_transparency_actor": "automation-lab~google-ads-scraper",
+    "apify_transparency_actor": "burbn~google-ads-search",
+    "google_transparency_backend": "apify",
+    "google_transparency_region": "US",
+    "google_transparency_concurrency": 4,
+    "google_places_api_key": "",
+    "close_api_key": "",
     "verify_live_ads": True,
     "default_radius_miles": 25,
     "default_limit": 500,
@@ -27,6 +32,8 @@ SECRET_FIELDS = {
     "neverbounce_api_key",
     "clickup_api_key",
     "meta_ads_access_token",
+    "google_places_api_key",
+    "close_api_key",
 }
 
 
