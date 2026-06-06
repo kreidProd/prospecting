@@ -28,22 +28,13 @@ const TIER_DEFS: TierDef[] = [
       'Warm target. Budget history + installed infrastructure = they\'ve been a buyer before.',
   },
   {
-    id: '2A',
+    id: '2',
     dot: 'bg-sky-500',
-    title: 'Never ran ads · no analytics',
+    title: 'Not running ads · single-loc',
     signals:
-      'No ad pixels, no GA4, no GTM, no Meta Pixel. Clean slate website.',
+      'No active Google Ads, no live ad in Transparency Center, no gclid. May or may not have GA/GTM analytics — either way, no current paid traffic.',
     sell:
-      'Cold but greenfield. Full funnel build. Longer sales cycle — they\'re not used to measuring.',
-  },
-  {
-    id: '2B',
-    dot: 'bg-sky-400',
-    title: 'Never ran ads · has analytics',
-    signals:
-      'GA4 or GTM installed, but no advertising pixels. Tracking-curious but not paying for traffic yet.',
-    sell:
-      'Educated buyer. They get tracking, just haven\'t pulled the trigger on paid acquisition. Easier "scale what you have" pitch.',
+      'Cold but qualified by reviews + rating. Pitch the funnel build; ramp paid acquisition. Easier sell if they already have GA/GTM (educated buyer), longer sale if greenfield.',
   },
   {
     id: '3A',

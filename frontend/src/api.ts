@@ -102,7 +102,10 @@ export async function startRun(
   existing_id: string | null,
   name: string,
   target_tiers?: string[] | null,
-  skip_clickup_dedup?: boolean
+  skip_clickup_dedup?: boolean,
+  owner_only?: boolean,
+  foundation_id?: string | null,
+  sync_to_close?: boolean
 ): Promise<{ run_id: string }> {
   const r = await fetch('/api/runs', {
     method: 'POST',
@@ -110,9 +113,12 @@ export async function startRun(
     body: JSON.stringify({
       scraped_id,
       existing_id,
+      foundation_id: foundation_id ?? null,
       name,
       target_tiers,
       skip_clickup_dedup: skip_clickup_dedup ?? false,
+      owner_only: owner_only ?? false,
+      sync_to_close: sync_to_close ?? false,
     }),
   })
   if (!r.ok) throw new Error(`Start run failed: ${r.status}`)
@@ -160,6 +166,13 @@ export type AppSettings = {
   meta_ads_access_token: string
   meta_ads_access_token_set: boolean
   apify_transparency_actor: string
+  google_transparency_backend: 'apify' | 'playwright'
+  google_transparency_region: string
+  google_transparency_concurrency: number
+  google_places_api_key: string
+  google_places_api_key_set: boolean
+  close_api_key: string
+  close_api_key_set: boolean
   verify_live_ads: boolean
   default_radius_miles: number
   default_limit: number

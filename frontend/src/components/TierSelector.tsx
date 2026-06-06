@@ -1,8 +1,7 @@
 const TIER_OPTIONS: { id: string; label: string; description: string }[] = [
   { id: '1A', label: '1A', description: 'Running ads · no conversion tracking' },
   { id: '1B', label: '1B', description: 'Recently ran ads · no conversion tracking' },
-  { id: '2A', label: '2A', description: 'Never ran ads · no analytics' },
-  { id: '2B', label: '2B', description: 'Never ran ads · has GA/GTM' },
+  { id: '2', label: '2', description: 'Not running ads · single-loc' },
   { id: '3A', label: '3A', description: 'Multi-location · running or recent ads' },
   { id: '3B', label: '3B', description: 'Multi-location · GA/GTM only' },
 ]
@@ -34,7 +33,7 @@ export function TierSelector({ value, onChange }: Props) {
         </div>
         <div className="flex gap-1.5 text-xs">
           <PresetBtn onClick={() => preset(['1A', '1B'])}>Hot (1A/1B)</PresetBtn>
-          <PresetBtn onClick={() => preset(['1A', '1B', '2A', '2B'])}>All single-loc</PresetBtn>
+          <PresetBtn onClick={() => preset(['1A', '1B', '2'])}>All single-loc</PresetBtn>
           <PresetBtn onClick={() => preset(['3A', '3B'])}>Multi-loc</PresetBtn>
           <PresetBtn onClick={() => preset(TIER_OPTIONS.map((t) => t.id))}>All</PresetBtn>
         </div>

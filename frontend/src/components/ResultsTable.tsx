@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getResults, type ResultRow } from '../api'
 
-const TIERS = ['1A', '1B', '2A', '2B', '3A', '3B', 'SKIP']
+const TIERS = ['1A', '1B', '2', '3A', '3B', 'SKIP']
 
 type Col = { key: string; label: string; width?: string }
 const COLS: Col[] = [
@@ -325,8 +325,7 @@ function renderCell(col: string, val: string | undefined, row: ResultRow) {
     const styles: Record<string, string> = {
       '1A': 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
       '1B': 'bg-emerald-50 text-emerald-600 ring-emerald-500/15',
-      '2A': 'bg-sky-50 text-sky-700 ring-sky-600/20',
-      '2B': 'bg-sky-50 text-sky-600 ring-sky-500/15',
+      '2': 'bg-sky-50 text-sky-700 ring-sky-600/20',
       '3A': 'bg-violet-50 text-violet-700 ring-violet-600/20',
       '3B': 'bg-violet-50 text-violet-600 ring-violet-500/15',
       SKIP: 'bg-slate-100 text-slate-500 ring-slate-500/10',

@@ -39,15 +39,21 @@ const FIELD_LABELS: Record<string, string> = {
 
 export function RetierPanel({ onStarted }: Props) {
   const [uploaded, setUploaded] = useState<ClickUpUploadResult | null>(null)
+  const [foundation, setFoundation] = useState<ClickUpUploadResult | null>(null)
   const [runName, setRunName] = useState('')
-  const [targetTiers, setTargetTiers] = useState<string[]>(['1A', '1B', '2A', '2B', '3A', '3B'])
+  const [targetTiers, setTargetTiers] = useState<string[]>(['1A', '1B', '2', '3A', '3B'])
+  const [skipClickupDedup, setSkipClickupDedup] = useState<boolean>(true)
+  const [ownerOnly, setOwnerOnly] = useState<boolean>(false)
+  const [syncToClose, setSyncToClose] = useState<boolean>(false)
   const [industry, setIndustry] = useState<string>('roofing')
   const [availableFilters, setAvailableFilters] = useState<IndustryFilter[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadingFoundation, setUploadingFoundation] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [lastFile, setLastFile] = useState<File | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const foundationInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     getIndustryFilters().then(setAvailableFilters).catch(() => {})
@@ -65,6 +71,20 @@ export function RetierPanel({ onStarted }: Props) {
       setErr(e.message || 'Upload failed')
     } finally {
       setUploading(false)
+    }
+  }
+
+  async function handleFoundation(file: File) {
+    setErr(null)
+    setUploadingFoundation(true)
+    try {
+      // Foundation skips the industry filter — we keep every existing row.
+      const r = await uploadClickUpCsv(file, null)
+      setFoundation(r)
+    } catch (e: any) {
+      setErr(e.message || 'Foundation upload failed')
+    } finally {
+      setUploadingFoundation(false)
     }
   }
 
@@ -100,7 +120,10 @@ export function RetierPanel({ onStarted }: Props) {
         null,
         runName || `Re-tier · ${uploaded.filename}`,
         targetTiers,
-        true, // skip_clickup_dedup — we're re-tiering the list itself
+        skipClickupDedup,
+        ownerOnly,
+        foundation?.file_id ?? null,
+        syncToClose,
       )
       onStarted?.(run_id)
     } catch (e: any) {
@@ -117,6 +140,61 @@ export function RetierPanel({ onStarted }: Props) {
 
   return (
     <div className="space-y-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-card">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Foundation CSV <span className="font-normal text-slate-500">(optional)</span>
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Existing list you trust. Anything in the prospect CSV that overlaps by phone or
+              domain gets dropped before scoring. Foundation rows are re-tiered too and lead
+              the output CSV.
+            </p>
+          </div>
+          {foundation && (
+            <button
+              type="button"
+              onClick={() => setFoundation(null)}
+              className="text-xs font-medium text-slate-500 hover:text-slate-800"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <div
+            onClick={() => foundationInputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              const f = e.dataTransfer.files[0]
+              if (f) handleFoundation(f)
+            }}
+            className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 px-6 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
+          >
+            <div className="text-sm font-medium text-slate-700">
+              {uploadingFoundation
+                ? 'Uploading…'
+                : foundation
+                  ? `${foundation.filename} · ${foundation.row_count.toLocaleString()} rows loaded`
+                  : 'Drop foundation CSV (or click to browse)'}
+            </div>
+            <input
+              ref={foundationInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) handleFoundation(f)
+              }}
+            />
+          </div>
+        </div>
+      </section>
+
       <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-card">
         <h3 className="text-sm font-semibold text-slate-900">Upload a ClickUp CSV export</h3>
         <p className="mt-0.5 text-xs text-slate-500">
@@ -251,10 +329,10 @@ export function RetierPanel({ onStarted }: Props) {
           />
           <button
             onClick={handleRun}
-            disabled={!uploaded || !!missingRequired || submitting || targetTiers.length === 0}
+            disabled={!uploaded || !!missingRequired || submitting || (!ownerOnly && targetTiers.length === 0)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
           >
-            {submitting ? 'Starting…' : 'Re-tier list'}
+            {submitting ? 'Starting…' : ownerOnly ? 'Look up owners' : 'Re-tier list'}
           </button>
         </div>
 
@@ -262,10 +340,47 @@ export function RetierPanel({ onStarted }: Props) {
           <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>
         )}
 
-        <p className="mt-3 text-xs text-slate-500">
-          ClickUp dedup is disabled on this flow — we want to re-score every existing prospect,
-          not skip them as duplicates.
-        </p>
+        <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500/30"
+            checked={skipClickupDedup}
+            onChange={(e) => setSkipClickupDedup(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium text-slate-800">Skip ClickUp dedup</span> — re-score
+            every row even if it's already in ClickUp. Uncheck to drop rows that already exist
+            in your ClickUp list.
+          </span>
+        </label>
+
+        <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500/30"
+            checked={ownerOnly}
+            onChange={(e) => setOwnerOnly(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium text-slate-800">Owner lookup only</span> — skip tier
+            re-scoring and ad verification. Just look up each business on BBB and fill in the
+            owner name. Much faster and won't touch existing tier columns.
+          </span>
+        </label>
+
+        <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500/30"
+            checked={syncToClose}
+            onChange={(e) => setSyncToClose(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium text-slate-800">Sync results to Close</span> — after
+            the run completes, push the new Tier / Reviews / Rating values into the matching
+            Close lead (matched by website domain). Requires Close API key in Settings.
+          </span>
+        </label>
       </section>
     </div>
   )

@@ -52,6 +52,8 @@ export function Settings() {
       if (patch.apify_api_token?.startsWith('••••')) delete patch.apify_api_token
       if (patch.hunter_api_key?.startsWith('••••')) delete patch.hunter_api_key
       if (patch.neverbounce_api_key?.startsWith('••••')) delete patch.neverbounce_api_key
+      if (patch.google_places_api_key?.startsWith('••••')) delete patch.google_places_api_key
+      if (patch.close_api_key?.startsWith('••••')) delete patch.close_api_key
       if (patch.meta_ads_access_token?.startsWith('••••')) delete patch.meta_ads_access_token
       const updated = await saveSettings(patch)
       setSettings(updated)
@@ -135,6 +137,20 @@ export function Settings() {
           value={(draft.hunter_api_key as string) ?? ''}
           onChange={(v) => set('hunter_api_key', v)}
           isSet={settings.hunter_api_key_set}
+        />
+        <KeyField
+          label="Google Places API key"
+          hint="Optional. Fills in missing review counts and ratings during enrichment. Free $200/mo credit covers ~5,800 lookups; without it we fall back to BBB letter grades."
+          value={(draft.google_places_api_key as string) ?? ''}
+          onChange={(v) => set('google_places_api_key', v)}
+          isSet={settings.google_places_api_key_set}
+        />
+        <KeyField
+          label="Close API key"
+          hint="Optional. Enables 'Sync to Close' on re-tier runs — pushes Tier / Reviews / Rating back into matching Close leads (matched by domain). Get one at app.close.com → Settings → Developer → API Keys."
+          value={(draft.close_api_key as string) ?? ''}
+          onChange={(v) => set('close_api_key', v)}
+          isSet={settings.close_api_key_set}
         />
         <KeyField
           label="NeverBounce API key"
@@ -237,14 +253,58 @@ export function Settings() {
 
         <div className="border-t border-slate-100 pt-4">
           <Field
+            label="Google Ads Transparency backend"
+            hint="'Apify' uses a paid actor. 'Playwright' drives a local headless Chromium against adstransparency.google.com — free, but your IP can be rate-limited. Run 'python -m playwright install chromium' once after switching."
+          >
+            <select
+              value={(draft.google_transparency_backend as string) ?? 'apify'}
+              onChange={(e) => set('google_transparency_backend', e.target.value as 'apify' | 'playwright')}
+              className={inputCls}
+            >
+              <option value="apify">Apify (paid, cloud)</option>
+              <option value="playwright">Playwright (free, self-hosted)</option>
+            </select>
+          </Field>
+
+          <Field
+            label="Playwright concurrency"
+            hint="How many headless Chromium instances to run in parallel when the Playwright backend is active. Each uses ~150–250MB RAM. 4 is a reasonable default; bump up if your machine has headroom, down if Google starts rate-limiting."
+          >
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={(draft.google_transparency_concurrency as number) ?? 4}
+              onChange={(e) => set('google_transparency_concurrency', Math.max(1, Math.min(16, Number(e.target.value) || 1)))}
+              disabled={(draft.google_transparency_backend ?? settings.google_transparency_backend) !== 'playwright'}
+              className={`${inputCls} max-w-[8rem]`}
+            />
+          </Field>
+
+          <Field
+            label="Transparency Center region"
+            hint="Two-letter country code passed to the Transparency Center (e.g. US, GB, CA). Applies to both backends."
+          >
+            <input
+              type="text"
+              value={(draft.google_transparency_region as string) ?? 'US'}
+              onChange={(e) => set('google_transparency_region', e.target.value.toUpperCase())}
+              placeholder="US"
+              maxLength={2}
+              className={`${inputCls} max-w-[8rem]`}
+            />
+          </Field>
+
+          <Field
             label="Apify Google Ads Transparency actor"
-            hint="Actor slug that scrapes adstransparency.google.com. Default works for most; change if you fork your own."
+            hint="Only used when the backend above is set to Apify. Actor slug that scrapes adstransparency.google.com."
           >
             <input
               type="text"
               value={(draft.apify_transparency_actor as string) ?? ''}
               onChange={(e) => set('apify_transparency_actor', e.target.value)}
               placeholder="automation-lab~google-ads-scraper"
+              disabled={(draft.google_transparency_backend ?? settings.google_transparency_backend) === 'playwright'}
               className={inputCls}
             />
           </Field>

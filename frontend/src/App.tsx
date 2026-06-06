@@ -23,13 +23,12 @@ import {
 const TIER_META: Record<string, { label: string; color: string; text: string }> = {
   '1A': { label: '1A', color: 'bg-emerald-500', text: 'text-emerald-700' },
   '1B': { label: '1B', color: 'bg-emerald-400', text: 'text-emerald-600' },
-  '2A': { label: '2A', color: 'bg-sky-500', text: 'text-sky-700' },
-  '2B': { label: '2B', color: 'bg-sky-400', text: 'text-sky-600' },
+  '2': { label: '2', color: 'bg-sky-500', text: 'text-sky-700' },
   '3A': { label: '3A', color: 'bg-violet-500', text: 'text-violet-700' },
   '3B': { label: '3B', color: 'bg-violet-400', text: 'text-violet-600' },
   SKIP: { label: 'Skip', color: 'bg-slate-400', text: 'text-slate-600' },
 }
-const TIER_ORDER = ['1A', '1B', '2A', '2B', '3A', '3B', 'SKIP']
+const TIER_ORDER = ['1A', '1B', '2', '3A', '3B', 'SKIP']
 
 const VIEW_META: Record<View, { eyebrow: string; title: string }> = {
   prospecting: { eyebrow: 'Prospecting', title: 'Enrich & tier leads' },

@@ -1,35 +1,17 @@
 export type Industry = { value: string; label: string; group: string }
 
+// Broad industry buckets. Each bucket id matches a key in the backend's
+// INDUSTRY_NAME_FILTERS (for post-scrape filtering) and INDUSTRY_SEARCH_QUERIES
+// (for fan-out into multiple Google Maps search queries per bucket).
 export const INDUSTRIES: Industry[] = [
-  // Roofing / exterior (primary)
-  { value: 'roofing contractor', label: 'Roofing contractor', group: 'Exterior' },
-  { value: 'roof repair', label: 'Roof repair', group: 'Exterior' },
-  { value: 'gutter installation', label: 'Gutter installation', group: 'Exterior' },
-  { value: 'siding contractor', label: 'Siding contractor', group: 'Exterior' },
-  { value: 'window installation', label: 'Window installation', group: 'Exterior' },
-  { value: 'exterior painting', label: 'Exterior painting', group: 'Exterior' },
-
-  // Storm / restoration
-  { value: 'storm damage restoration', label: 'Storm damage restoration', group: 'Restoration' },
-  { value: 'water damage restoration', label: 'Water damage restoration', group: 'Restoration' },
-  { value: 'fire damage restoration', label: 'Fire damage restoration', group: 'Restoration' },
-  { value: 'mold remediation', label: 'Mold remediation', group: 'Restoration' },
-
-  // Home services
-  { value: 'hvac contractor', label: 'HVAC contractor', group: 'Home Services' },
-  { value: 'plumber', label: 'Plumber', group: 'Home Services' },
-  { value: 'electrician', label: 'Electrician', group: 'Home Services' },
-  { value: 'solar panel installation', label: 'Solar installation', group: 'Home Services' },
-  { value: 'pest control', label: 'Pest control', group: 'Home Services' },
-  { value: 'landscaping', label: 'Landscaping', group: 'Home Services' },
-  { value: 'tree service', label: 'Tree service', group: 'Home Services' },
-  { value: 'fence contractor', label: 'Fence contractor', group: 'Home Services' },
-  { value: 'concrete contractor', label: 'Concrete contractor', group: 'Home Services' },
-  { value: 'pool contractor', label: 'Pool contractor', group: 'Home Services' },
-
-  // Remodeling
-  { value: 'general contractor', label: 'General contractor', group: 'Remodeling' },
-  { value: 'kitchen remodeling', label: 'Kitchen remodeling', group: 'Remodeling' },
-  { value: 'bathroom remodeling', label: 'Bathroom remodeling', group: 'Remodeling' },
-  { value: 'home builder', label: 'Home builder', group: 'Remodeling' },
+  { value: 'roofing', label: 'Roofing & Exterior', group: 'Exterior' },
+  { value: 'restoration', label: 'Storm / Restoration', group: 'Restoration' },
+  { value: 'hvac', label: 'HVAC', group: 'Home Services' },
+  { value: 'plumbing', label: 'Plumbing', group: 'Home Services' },
+  { value: 'electrical', label: 'Electrical', group: 'Home Services' },
+  { value: 'solar', label: 'Solar', group: 'Home Services' },
+  { value: 'pest_control', label: 'Pest Control', group: 'Home Services' },
+  { value: 'landscaping', label: 'Landscaping / Tree', group: 'Home Services' },
+  { value: 'painting', label: 'Painting', group: 'Home Services' },
+  { value: 'flooring', label: 'Flooring', group: 'Home Services' },
 ]
