@@ -232,6 +232,31 @@ def detect_location_count(html: str) -> int:
     return 1
 
 
+def _make_public_records_lookup():
+    """Build the cascade-7b public-records lookup, or None if unavailable.
+
+    Returns `fn(state, business_name, city) -> dict|None`. None unless Supabase
+    env is set, so non-prospect runs (e.g. ClickUp re-tier) need no DB. Per lead:
+    exact state+norm match (indexed) → city-narrowed fuzzy fallback.
+    """
+    import os
+    if not (os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_ROLE_KEY")):
+        return None
+    try:
+        from supabase_client import fetch_exact, fetch_state_city
+        from records_loaders import match_public_record
+    except Exception:
+        return None
+
+    def lookup(state, business_name, city=""):
+        fstate = (lambda s, _: fetch_state_city(s, city)) if city else None
+        return match_public_record(
+            state, business_name, fetch_exact, fstate, city=city,
+        )
+
+    return lookup
+
+
 def verify_phone_on_site(phone: str, html: str) -> bool:
     """Check whether the scraped phone number appears on the fetched page."""
     if not phone or not html:
@@ -570,6 +595,11 @@ def run_pipeline(
     google = google_verifier or NULL_VERIFIER
     meta = meta_verifier or NULL_VERIFIER
 
+    # Public-records owner lookup (cascade 7b). Built once per run; None unless
+    # Supabase env is present, so non-prospect runs need no DB. Exact match is
+    # indexed/fast; fuzzy is city-narrowed to keep per-lead result sets small.
+    pr_lookup = _make_public_records_lookup()
+
     # Transparency Center via Apify is a batched pre-pass: one actor run covers
     # every domain in this pipeline, cheaper and faster than per-row lookups.
     # Google verification is now per-row inside process() via a sync actor call.
@@ -603,6 +633,7 @@ def run_pipeline(
                 website=row.get("website", ""),
                 phone=row.get("phone", ""),
                 allow_bbb=True,
+                public_records_lookup=pr_lookup,
             )
         out["owner_name"] = owner_name
         out["owner_source"] = owner_source
@@ -698,6 +729,7 @@ def run_pipeline(
                 website=row.get("website", ""),
                 phone=row.get("phone", ""),
                 allow_bbb=True,
+                public_records_lookup=pr_lookup,
             )
         out["owner_name"] = owner_name
         out["owner_source"] = owner_source

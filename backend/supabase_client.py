@@ -77,10 +77,21 @@ def fetch_exact(state: str, biz_name_norm: str) -> list[dict]:
 def fetch_state(state: str, _ignored: str = "") -> list[dict]:
     """All records in a state for the fuzzy pass (cascade 7b step 2).
 
-    For large states this should be narrowed (e.g. by city or a name prefix);
-    kept simple here — the Enrich flow batches per-lead and can pass city.
+    WARNING: a full-state pull is large (FL ~hundreds of thousands). Prefer
+    fetch_state_city in the per-lead hot path; reserve this for batch jobs.
     """
     url = f"{_URL}/rest/v1/public_records?state=eq.{state}&select=*"
+    r = requests.get(url, headers=_headers(), timeout=_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_state_city(state: str, city: str) -> list[dict]:
+    """Records in a state + city — small result set for a fast fuzzy pass."""
+    if not city:
+        return []
+    url = (f"{_URL}/rest/v1/public_records"
+           f"?state=eq.{state}&city=ilike.{requests.utils.quote(city)}&select=*")
     r = requests.get(url, headers=_headers(), timeout=_TIMEOUT)
     r.raise_for_status()
     return r.json()

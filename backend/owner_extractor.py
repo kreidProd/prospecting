@@ -615,14 +615,41 @@ def resolve_owner(
     website: str = "",
     phone: str = "",
     allow_bbb: bool = True,
+    public_records_lookup=None,
 ) -> tuple[str, str]:
     """Return (owner_name, source).
 
-    Tries BBB first, then the business website (homepage already fetched,
-    then a handful of common owner-revealing subpaths), then OpenCorporates.
-    source is one of: "bbb", "website", "opencorporates", "none".
+    v2 cascade order (docs/prospect-domain.md §4):
+      7a anchor  — business website (homepage already fetched, then subpages)
+      7b public_records — free authoritative state license/SoS match (callable)
+      7c bbb     — playwright/stealth BBB lookup
+      (fallback) opencorporates — legacy free tier
+    source is one of: "website", "public_records", "bbb", "opencorporates", "none".
+
+    public_records_lookup, when provided, is `fn(state, business_name, city)`
+    returning a dict with "owner_name" (or None). Passed in so non-prospect
+    runs don't require Supabase env.
     """
-    # 1. BBB — primary.
+    # 7a. Website anchor — zero extra network, cheapest, run first.
+    if html:
+        name = extract_owner_from_html(html)
+        if name:
+            return name, "website"
+    if website:
+        name = scrape_owner_subpages(website)
+        if name:
+            return name, "website"
+
+    # 7b. Public records — free, authoritative, before the slow CF-prone BBB hop.
+    if public_records_lookup and business_name and state:
+        try:
+            rec = public_records_lookup(state, business_name, city)
+        except Exception:
+            rec = None
+        if rec and rec.get("owner_name"):
+            return rec["owner_name"], "public_records"
+
+    # 7c. BBB.
     if allow_bbb:
         name = find_owner_on_bbb(
             business_name, city=city, state=state,
@@ -631,19 +658,7 @@ def resolve_owner(
         if name:
             return name, "bbb"
 
-    # 2. Website HTML (already fetched by the pipeline — zero extra network).
-    if html:
-        name = extract_owner_from_html(html)
-        if name:
-            return name, "website"
-
-    # 3. About / team / contact subpages on the business's own site.
-    if website:
-        name = scrape_owner_subpages(website)
-        if name:
-            return name, "website"
-
-    # 4. OpenCorporates (state business registries).
+    # Fallback. OpenCorporates (legacy free tier).
     if business_name:
         name = find_owner_on_opencorporates(business_name, state=state)
         if name:
