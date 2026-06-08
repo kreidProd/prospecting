@@ -250,17 +250,26 @@ def normalize_officer_name(raw: str) -> str:
     return _titlecase_person(raw)
 
 
-def parse_sunbiz_cor(lines: Iterable[str]) -> list[PublicRecord]:
-    out: list[PublicRecord] = []
+# Bulk cordata is millions of entities; for prospecting we only want the
+# industry. Cheap substring pre-filter on the raw name region rejects ~99%
+# before the (more expensive) officer parse.
+ROOFING_NAME_RE = re.compile(r"roof", re.I)
+
+
+def iter_sunbiz_records(lines: Iterable[str], name_filter: "re.Pattern | None" = None):
+    """Stream cordata `cor` records → PublicRecord. Generator (memory-safe for
+    the 1.7GB quarterly). name_filter (e.g. ROOFING_NAME_RE) is matched against
+    the raw entity name and short-circuits before officer parsing."""
+    base = SUNBIZ["officer_block_start"]
+    slot = SUNBIZ["officer_slot_len"]
     for line in lines:
-        if len(line) < SUNBIZ["officer_block_start"]:
+        if len(line) < base:
             continue
         biz = _slice(line, *SUNBIZ["name"])
         if not biz:
             continue
-        biz_norm = normalize_biz_name(biz)
-        base = SUNBIZ["officer_block_start"]
-        slot = SUNBIZ["officer_slot_len"]
+        if name_filter and not name_filter.search(biz):
+            continue
         chosen = None
         for n in range(SUNBIZ["officer_count"]):
             s0 = base + n * slot - 1  # 0-based slot start (block start is 1-based)
@@ -269,24 +278,26 @@ def parse_sunbiz_cor(lines: Iterable[str]) -> list[PublicRecord]:
             owner = normalize_officer_name(nm_raw)
             if not is_real_person(owner):
                 continue
-            # prefer a principal-titled officer; else take the first human.
-            if chosen is None:
+            if chosen is None:                       # first human = fallback
                 chosen = (owner, title)
             if title.upper() in SUNBIZ_PRINCIPAL_TITLES:
-                chosen = (owner, title)
+                chosen = (owner, title)              # prefer a principal
                 break
         if not chosen:
             continue
-        out.append(PublicRecord(
+        yield PublicRecord(
             source="FL_SUNBIZ",
             state="FL",
             biz_name_raw=biz,
-            biz_name_norm=biz_norm,
+            biz_name_norm=normalize_biz_name(biz),
             owner_name=chosen[0],
             owner_title=chosen[1] or None,
             source_row={},
-        ))
-    return out
+        )
+
+
+def parse_sunbiz_cor(lines: Iterable[str], name_filter=None) -> list[PublicRecord]:
+    return list(iter_sunbiz_records(lines, name_filter))
 
 
 # --------------------------------------------------------------------------- #
