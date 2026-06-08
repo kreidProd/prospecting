@@ -215,21 +215,24 @@ def parse_dbpr(text: str, cols: dict | None = None) -> list[PublicRecord]:
 
 # --------------------------------------------------------------------------- #
 # FL Sunbiz — cordata fixed-width `cor` records (up to 6 officers)
-# --------------------------------------------------------------------------- #
-# Byte offsets (1-based, from cor.html). CONFIRM against a real cor line via
-# `--validate`. Each officer slot is 166 bytes starting at 493.
+# Byte offsets (1-based) reverse-engineered from real cordata records (1440-byte
+# records; the published cor.html layout was inaccurate). Verified against the
+# daily SFTP file: officer slots are 128 bytes, 6 of them, starting at 669, with
+# SEPARATE last/first name fields (not a single name field).
+#   TRUESPAN ROOFING:  AMBRP | JIMENEZ            | OSVALDO   -> Osvaldo Jimenez
+#   EASY GAME (3 offs): MGR P | BRANT/FORD/SPAIN  | KRISTOPHER/...  @ 669/797/925
 SUNBIZ = {
-    "name": (13, 204),          # corporate/entity name
-    "status": (205, 205),
-    "officer_block_start": 493,
-    "officer_slot_len": 166,
+    "name": (13, 204),               # corporate/entity name — confirmed
+    "officer_block_start": 669,
+    "officer_slot_len": 128,
     "officer_count": 6,
-    # within a slot (1-based relative): title 1..8, name 9..50
-    "off_title_rel": (1, 8),
-    "off_name_rel": (9, 50),
+    # within a slot (1-based relative):
+    "off_title_rel": (1, 5),         # title code (e.g. "MGR P", "AMBRP")
+    "off_last_rel": (6, 25),         # surname
+    "off_first_rel": (26, 45),       # given name(s)
 }
-# Officer title codes worth keeping as the principal (owner-ish).
-SUNBIZ_PRINCIPAL_TITLES = {"P", "PRES", "MGR", "MGRM", "AMBR", "MBR", "PTD", "CEO", "OWN"}
+# Title-code fragments that mark a principal/owner (substring match).
+SUNBIZ_PRINCIPAL_TITLES = {"P", "PRES", "MGR", "AMBR", "MBR", "CEO", "OWN"}
 
 
 def _slice(line: str, start: int, end: int) -> str:
@@ -274,13 +277,17 @@ def iter_sunbiz_records(lines: Iterable[str], name_filter: "re.Pattern | None" =
         for n in range(SUNBIZ["officer_count"]):
             s0 = base + n * slot - 1  # 0-based slot start (block start is 1-based)
             title = line[s0 + SUNBIZ["off_title_rel"][0] - 1: s0 + SUNBIZ["off_title_rel"][1]].strip()
-            nm_raw = line[s0 + SUNBIZ["off_name_rel"][0] - 1: s0 + SUNBIZ["off_name_rel"][1]].strip()
-            owner = normalize_officer_name(nm_raw)
+            last = line[s0 + SUNBIZ["off_last_rel"][0] - 1: s0 + SUNBIZ["off_last_rel"][1]].strip()
+            first = line[s0 + SUNBIZ["off_first_rel"][0] - 1: s0 + SUNBIZ["off_first_rel"][1]].strip()
+            if not last and not first:
+                continue
+            owner = _titlecase_person(f"{first} {last}".strip())
             if not is_real_person(owner):
                 continue
             if chosen is None:                       # first human = fallback
                 chosen = (owner, title)
-            if title.upper() in SUNBIZ_PRINCIPAL_TITLES:
+            tu = title.upper()
+            if any(code in tu for code in SUNBIZ_PRINCIPAL_TITLES):
                 chosen = (owner, title)              # prefer a principal
                 break
         if not chosen:
