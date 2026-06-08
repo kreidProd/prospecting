@@ -106,7 +106,10 @@ def _sftp_download(remote: str, local: str) -> None:
     t = paramiko.Transport((SUNBIZ_HOST, 22))
     t.connect(username=SUNBIZ_CRED[0], password=SUNBIZ_CRED[1])
     try:
-        paramiko.SFTPClient.from_transport(t).get(remote, local)
+        # prefetch=False is REQUIRED: the shared public account refuses paramiko's
+        # default parallel prefetch ("insufficient resources") on large files.
+        # Sequential is slower (~0.3 MB/s) but completes the 1.7GB quarterly.
+        paramiko.SFTPClient.from_transport(t).get(remote, local, prefetch=False)
     finally:
         t.close()
 
