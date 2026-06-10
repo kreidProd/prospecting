@@ -136,68 +136,43 @@ class PublicRecord:
 
 
 # --------------------------------------------------------------------------- #
-# FL DBPR — CILB contractor extract (roofing occupation codes)
+# FL DBPR — Construction Industry licensee extract (Instant Public Records).
 # --------------------------------------------------------------------------- #
-# Roofing occupation codes in the CILB file: 0611 = Certified Roofing (CCC),
-# 0612 = Registered Roofing (RC). Confirm column map against the real extract.
-DBPR_ROOFING_OCC_CODES = {"0611", "0612"}
-DBPR_COLS = {           # logical field -> 0-based column index (CONFIRM on first file)
-    "occupation_code": 0,
+# Confirmed against the real headerless CSV (CONSTRUCTIONLICENSE_*.csv):
+#   col0 board("06") col1 license-type col2 licensee/qualifier "LAST, FIRST"
+#   col3 DBA/business ("INDIVIDUAL" or blank when none) col8 city col9 state
+#   col20 full license no.  Roofing = license types CCC (Certified Roofing) + RC
+#   (Registered Roofing).
+DBPR_ROOFING_TYPES = {"CCC", "RC"}
+DBPR_NON_BUSINESS = {"", "INDIVIDUAL"}
+DBPR_COLS = {           # logical field -> 0-based column index
+    "license_type": 1,
     "licensee_name": 2,  # qualifier individual, "LAST, FIRST MIDDLE"
     "dba_name": 3,       # business entity
     "city": 8,
     "state": 9,
-    "license_no": 1,
+    "license_no": 20,
 }
 
 
 def parse_dbpr(text: str, cols: dict | None = None) -> list[PublicRecord]:
-    """Parse a DBPR CILB quote/comma extract into roofing PublicRecords.
-
-    Header-aware: if the first row contains known header labels we map by name;
-    otherwise we fall back to positional DBPR_COLS.
-    """
-    cols = cols or DBPR_COLS
-    rows = list(csv.reader(io.StringIO(text)))
-    if not rows:
-        return []
-
-    # Header detection: map by fuzzy header name when present.
-    header = [h.strip().lower() for h in rows[0]]
-    name_idx = None
-    if any("licens" in h or "name" in h or "occupation" in h for h in header):
-        def find(*subs):
-            for i, h in enumerate(header):
-                if any(s in h for s in subs):
-                    return i
-            return None
-        name_idx = {
-            "occupation_code": find("occupation"),
-            "licensee_name": find("licensee name", "qualifier", "primary name"),
-            "dba_name": find("dba", "business name", "doing business"),
-            "city": find("city"),
-            "state": find("state"),
-            "license_no": find("license number", "license no", "lic num"),
-        }
-        body = rows[1:]
-    else:
-        body = rows
-
-    idx = name_idx or cols
+    """Parse the DBPR Construction licensee CSV (headerless, quote/comma) into
+    roofing PublicRecords. Keeps CCC/RC licenses that carry a real business name
+    (DBA); the qualifier (col2, 'LAST, FIRST') becomes the owner."""
+    idx = cols or DBPR_COLS
     out: list[PublicRecord] = []
-    for r in body:
+    for r in csv.reader(io.StringIO(text)):
         def g(key):
             i = idx.get(key)
             return r[i].strip() if i is not None and i < len(r) else ""
 
-        occ = g("occupation_code")
-        if DBPR_ROOFING_OCC_CODES and occ and occ not in DBPR_ROOFING_OCC_CODES:
+        if g("license_type").upper() not in DBPR_ROOFING_TYPES:
+            continue
+        biz = g("dba_name")
+        if biz.upper() in DBPR_NON_BUSINESS:        # "INDIVIDUAL" / blank → no business to match
             continue
         owner = normalize_lastfirst(g("licensee_name"))
         if not is_real_person(owner):
-            continue
-        biz = g("dba_name") or ""
-        if not biz:
             continue
         out.append(PublicRecord(
             source="FL_DBPR",
@@ -208,7 +183,7 @@ def parse_dbpr(text: str, cols: dict | None = None) -> list[PublicRecord]:
             owner_title="Qualifier",
             city=_titlecase_person(g("city")) or None,
             license_no=g("license_no") or None,
-            source_row={"occupation_code": occ},
+            source_row={"license_type": g("license_type")},
         ))
     return out
 
